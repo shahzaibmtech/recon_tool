@@ -1,0 +1,162 @@
+mkdir recon_tool
+cd recon_tool
+touch recon.py
+chmod +x recon.py
+nano recon.py
+
+#!/usr/bin/env python3
+
+import argparse
+import logging
+import socket
+import subprocess
+import requests
+import whois
+import dns.resolver
+from datetime import datetime
+import os
+import re
+
+# Setup logger
+def setup_logging(verbose=False):
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(level=level, format='[%(asctime)s] %(levelname)s: %(message)s')
+
+# WHOIS Lookup
+def whois_lookup(domain):
+    try:
+        data = whois.whois(domain)
+        return data.text if hasattr(data, 'text') else str(data)
+    except Exception as e:
+        return f"WHOIS lookup failed: {e}"
+
+# DNS Enumeration
+def dns_enum(domain):
+    records = {}
+    try:
+        for rtype in ["A", "MX", "TXT", "NS"]:
+            try:
+                answers = dns.resolver.resolve(domain, rtype, raise_on_no_answer=False)
+                records[rtype] = [r.to_text() for r in answers]
+            except Exception:
+                records[rtype] = []
+    except Exception as e:
+        records['error'] = str(e)
+    return records
+
+# Subdomain Enumeration using crt.sh
+def subdomain_enum(domain):
+    try:
+        url = f"https://crt.sh/?q=%25.{domain}&output=json"
+        response = requests.get(url, timeout=10)
+        json_data = response.json()
+        subdomains = sorted(set(entry['name_value'] for entry in json_data))
+        return subdomains
+    except Exception as e:
+        return [f"Subdomain enumeration failed: {e}"]
+
+# Port Scan (Common Ports)
+def port_scan(domain):
+    common_ports = [21, 22, 23, 25, 53, 80, 110, 139, 143, 443, 445, 3389]
+    open_ports = []
+    try:
+        ip = socket.gethostbyname(domain)
+        for port in common_ports:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(1)
+                result = s.connect_ex((ip, port))
+                if result == 0:
+                    open_ports.append(port)
+    except Exception as e:
+        return [f"Port scan failed: {e}"]
+    return open_ports
+
+# Banner Grabbing
+def banner_grab(domain, ports):
+    banners = {}
+    try:
+        ip = socket.gethostbyname(domain)
+        for port in ports:
+            try:
+                with socket.socket() as s:
+                    s.settimeout(2)
+                    s.connect((ip, port))
+                    s.send(b"HEAD / HTTP/1.0\r\n\r\n")
+                    data = s.recv(1024).decode(errors='ignore')
+                    banners[port] = data.strip()
+            except Exception:
+                banners[port] = "No banner"
+    except Exception as e:
+        banners["error"] = f"Banner grabbing failed: {e}"
+    return banners
+
+# Technology Detection using WhatWeb (must be installed)
+def tech_detect(domain):
+    try:
+        result = subprocess.check_output(["whatweb", domain], stderr=subprocess.DEVNULL)
+        return result.decode()
+    except Exception as e:
+        return f"Tech detection failed or WhatWeb not installed: {e}"
+
+# Report Generator
+def generate_report(domain, data):
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    os.makedirs("reports", exist_ok=True)
+    filename = f"reports/{domain}_{timestamp}.html"
+    with open(filename, "w") as f:
+        f.write(f"<h1>Recon Report for {domain}</h1>\n")
+        f.write(f"<p><b>Generated:</b> {timestamp}</p>\n")
+        for section, content in data.items():
+            f.write(f"<h2>{section.title()}</h2><pre>{content}</pre>\n")
+    print(f"[+] Report saved to {filename}")
+
+# Main Function
+def main():
+    parser = argparse.ArgumentParser(description="Python Recon Tool (Single-File)")
+    parser.add_argument("--domain", required=True, help="Target domain (e.g., example.com)")
+    parser.add_argument("--whois", action="store_true", help="WHOIS lookup")
+    parser.add_argument("--dns", action="store_true", help="DNS enumeration")
+    parser.add_argument("--subdomains", action="store_true", help="Subdomain enumeration")
+    parser.add_argument("--ports", action="store_true", help="Port scanning")
+    parser.add_argument("--banners", action="store_true", help="Banner grabbing")
+    parser.add_argument("--tech", action="store_true", help="Technology detection")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    args = parser.parse_args()
+
+    setup_logging(args.verbose)
+    domain = args.domain
+    results = {}
+
+    if args.whois:
+        logging.info("Performing WHOIS lookup...")
+        results['whois'] = whois_lookup(domain)
+    if args.dns:
+        logging.info("Performing DNS enumeration...")
+        results['dns'] = dns_enum(domain)
+    if args.subdomains:
+        logging.info("Enumerating subdomains...")
+        results['subdomains'] = subdomain_enum(domain)
+    if args.ports:
+        logging.info("Scanning ports...")
+        open_ports = port_scan(domain)
+        results['open_ports'] = open_ports
+    if args.banners and 'open_ports' in results:
+        logging.info("Grabbing banners...")
+        results['banners'] = banner_grab(domain, results['open_ports'])
+    if args.tech:
+        logging.info("Detecting technologies...")
+        results['technologies'] = tech_detect(domain)
+
+    generate_report(domain, results)
+
+if __name__ == "__main__":
+    main()
+
+pip install python-whois dnspython requests
+sudo apt install whatweb  # optional, for --tech
+
+chmod +x recon.py
+./recon.py --domain example.com --whois --dns --subdomains --ports --banners --tech --verbose
+
+reports/example.com_YYYY-MM-DD_HH-MM-SS.html
+
